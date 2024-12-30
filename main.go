@@ -5,55 +5,39 @@
 package main
 
 import (
-	"context"
 	"log"
-	"os"
-	"strings"
+
+	"github.com/joho/godotenv"
 
 	"github.com/RMS-SH/acumuladora/controllers"
 	"github.com/RMS-SH/acumuladora/infrastructure"
 	"github.com/RMS-SH/acumuladora/repositories"
 	"github.com/RMS-SH/acumuladora/usecases"
-	"github.com/joho/godotenv"
 )
 
 // main é o ponto de entrada da aplicação.
-// Ele carrega variáveis de ambiente, inicializa o MongoDB, configura
-// os repositórios, os casos de uso e os controladores, e inicia o servidor HTTP.
+// Carrega variáveis de ambiente, inicializa o Redis, configura o repositório,
+// o caso de uso e o controlador para a rota /request/ e inicia o servidor HTTP.
 func main() {
-	// Carregar variáveis de ambiente do arquivo .env
+	// Carregar variáveis de ambiente do arquivo .env (opcional)
 	if err := godotenv.Load(); err != nil {
 		log.Println("Nenhum arquivo .env encontrado ou erro ao carregá-lo")
 	} else {
 		log.Println("Arquivo .env carregado com sucesso")
 	}
 
-	ctx := context.Background()
+	// Inicializar cliente Redis
+	redisClient := infrastructure.NewRedisClient()
 
-	// Inicializar cliente MongoDB
-	mongoClient := infrastructure.NewMongoDBClient(ctx)
+	// Configurar repositório
+	redisRepo := repositories.NewRedisRepository(redisClient)
 
-	// Nome do banco de dados (pode ser parametrizável via .env, se desejado)
-	dbName := "acumulador"
+	// Configurar caso de uso
+	requestUsecase := usecases.NewRequestUsecase(redisRepo)
 
-	// Configurar repositórios
-	mongoRepo := repositories.NewMongoDBRepository(mongoClient, dbName, ctx)
+	// Configurar controlador
+	requestController := controllers.NewRequestController(requestUsecase)
 
-	// Configurar casos de uso
-	requestUsecase := usecases.NewRequestUsecase(mongoRepo)
-
-	// Ler IPs permitidos da variável de ambiente
-	allowedIPsEnv := os.Getenv("ALLOWED_IPS")
-	var allowedIPs []string
-	if allowedIPsEnv != "" {
-		allowedIPs = strings.Split(allowedIPsEnv, ",")
-	} else {
-		log.Println("Nenhum IP permitido especificado em ALLOWED_IPS")
-	}
-
-	// Configurar controladores
-	requestController := controllers.NewRequestController(requestUsecase, allowedIPs)
-
-	// Iniciar servidor HTTP
+	// Iniciar servidor HTTP (rota /request/)
 	infrastructure.StartHTTPServer(requestController)
 }

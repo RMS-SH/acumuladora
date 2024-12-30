@@ -1,17 +1,18 @@
+# docker-compose.yml
+
 version: "3.7"
 
 services:
-  filaflowise:
-    image: filaflowise:1.0.0  # Removido build e container_name
+  acumuladora:
+    image: acumuladora:1.0.0
     ports:
-      - "9988:9988"
-    volumes:
-      - filaflowise_data:/root/
+      - "7511:7511"
     networks:
       - RMS001
     environment:
-      - REDIS_URL=redis://redis:6379
-      - MONGO_URI=mongodb://rms:2ce8373f618edcda7557ea61f3566d88@mongodb:27017/?authSource=admin&readPreference=primary&ssl=false&directConnection=true
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
     deploy:
       mode: replicated
       replicas: 1
@@ -22,10 +23,13 @@ services:
         limits:
           cpus: "4"
           memory: 2048M
-
-volumes:
-  filaflowise_data:
-    external: true
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.acumuladora.rule=Host(`r001.acumuladora.datarms.com`)
+        - traefik.http.services.acumuladora.loadBalancer.server.port=7511
+        - traefik.http.routers.acumuladora.service=acumuladora
+        - traefik.http.routers.acumuladora.entrypoints=websecure
+        - traefik.http.routers.acumuladora.tls.certresolver=letsencryptresolver
 
 networks:
   RMS001:

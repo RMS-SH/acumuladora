@@ -21,112 +21,66 @@ import (
 )
 
 // RequestUsecase concentra a lógica de negócio relacionada ao processamento
-// das requisições e ao envio (ou acumulação) dos dados.
+// das requisições na rota /request/ e envio (ou acumulação) dos dados.
 type RequestUsecase struct {
-	MongoRepo *repositories.MongoDBRepository
+	RedisRepo *repositories.RedisRepository
 
 	timers   map[string]*time.Timer
 	timersMu sync.Mutex
-
-	accessTokenCache   map[string]time.Time
-	accessTokenCacheMu sync.Mutex
 }
 
-// NewRequestUsecase cria uma instância de RequestUsecase com as estruturas internas
-// para o agendamento de timers (acúmulo) e cache de tokens de acesso.
-func NewRequestUsecase(mongoRepo *repositories.MongoDBRepository) *RequestUsecase {
+// NewRequestUsecase cria uma instância de RequestUsecase com estruturas internas
+// para o agendamento de timers (acúmulo).
+func NewRequestUsecase(redisRepo *repositories.RedisRepository) *RequestUsecase {
 	return &RequestUsecase{
-		MongoRepo:          mongoRepo,
-		timers:             make(map[string]*time.Timer),
-		timersMu:           sync.Mutex{},
-		accessTokenCache:   make(map[string]time.Time),
-		accessTokenCacheMu: sync.Mutex{},
+		RedisRepo: redisRepo,
+		timers:    make(map[string]*time.Timer),
+		timersMu:  sync.Mutex{},
 	}
 }
 
-// ProcessRequest lida com a análise do token de acesso, identificação do tempo
-// de acúmulo (caso exista) e despacho das requisições para envio imediato ou
-// salvamento para envio posterior.
-func (u *RequestUsecase) ProcessRequest(accessToken string, r *http.Request) (int, error) {
-	// 1. Validar token de acesso.
-	valid, err := u.ValidateAccessToken(accessToken)
-	if err != nil {
-		return http.StatusInternalServerError, err
-	}
-	if !valid {
-		return http.StatusUnauthorized, errors.New("Access token inválido")
-	}
-
-	// 2. Extrair parâmetro de tempo (seconds) da URL (/request/{timeParam}).
+// ProcessRequest lida com a identificação do tempo de acúmulo (caso exista)
+// e o despacho das requisições para envio imediato ou salvamento para envio posterior.
+func (u *RequestUsecase) ProcessRequest(r *http.Request) (int, error) {
+	// 1. Extrair parâmetro de tempo (seconds) da URL (/request/{timeParam}).
 	timeParam, err := u.parseTimeParam(r.URL.Path)
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
 
-	// 3. Ler e interpretar o corpo da requisição como um ou múltiplos RequestData.
+	// 2. Ler e interpretar o corpo da requisição como um ou múltiplos RequestData.
 	requestDataList, err := u.parseRequestBody(r)
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
 
-	// 4. Processar cada RequestData recebido.
+	// 3. Processar cada RequestData recebido.
 	for _, requestData := range requestDataList {
 		userNS, url, err := extractUserNSData(requestData)
 		if err != nil {
 			return http.StatusBadRequest, err
 		}
 
-		// 4.1 Incrementar contagem de requests recebidos no workspace correspondente.
-		nomeWorkspace := requestData.Body[0].NomeWorkspace
-		currentDate := time.Now().Format("2006-01-02")
-		if err := u.MongoRepo.IncrementCounters(nomeWorkspace, currentDate, map[string]int{"requestRecebidos": 1}); err != nil {
-			log.Printf("Erro ao incrementar contadores: %v", err)
-			return http.StatusInternalServerError, err
-		}
-
-		// 4.2 Se timeParam == 0, envia os dados imediatamente; caso contrário, acumula.
+		// 3.1 Se timeParam == 0, envia os dados imediatamente; caso contrário, acumula.
 		if timeParam == 0 {
-			// Envio imediato dos dados (garantindo que o item 'dados' seja enviado primeiro).
+			// Envio imediato dos dados
 			dataToSend := reorderDataToSend(requestData.Body)
 			if err := u.sendDataToURL(url, dataToSend); err != nil {
 				log.Printf("Erro ao enviar dados para a URL: %v", err)
 				return http.StatusInternalServerError, err
 			}
 		} else {
-			// Salvar dados no MongoDB para envio posterior.
-			if err := u.MongoRepo.SaveUserData(userNS, requestData.Body, url); err != nil {
-				log.Printf("Erro ao salvar dados do usuário: %v", err)
+			// Salvar dados no Redis para envio posterior
+			if err := u.RedisRepo.SaveUserData(userNS, requestData.Body, url); err != nil {
+				log.Printf("Erro ao salvar dados do usuário no Redis: %v", err)
 				return http.StatusInternalServerError, err
 			}
-			// Agendar processamento dos dados após o tempo de acúmulo.
+			// Agendar processamento dos dados após o tempo de acúmulo
 			u.scheduleDataProcessing(userNS, timeParam+1)
 		}
 	}
 
 	return http.StatusOK, nil
-}
-
-// ValidateAccessToken verifica se o token de acesso é válido. Primeiro consulta
-// o cache local, caso não encontre ou esteja expirado, faz a verificação no MongoDB.
-func (u *RequestUsecase) ValidateAccessToken(accessToken string) (bool, error) {
-	u.accessTokenCacheMu.Lock()
-	expiration, found := u.accessTokenCache[accessToken]
-	u.accessTokenCacheMu.Unlock()
-
-	if found && time.Now().Before(expiration) {
-		return true, nil
-	}
-
-	isValid, err := u.MongoRepo.IsAccessTokenValid(accessToken)
-	if err != nil {
-		return false, err
-	}
-	if isValid {
-		u.accessTokenCacheMu.Lock()
-		u.accessTokenCache[accessToken] = time.Now().Add(60 * time.Minute)
-		u.accessTokenCacheMu.Unlock()
-	}
-	return isValid, nil
 }
 
 // scheduleDataProcessing agenda um timer para envio dos dados acumulados
@@ -148,14 +102,14 @@ func (u *RequestUsecase) scheduleDataProcessing(userNS string, delaySeconds int)
 	u.timers[userNS] = timer
 }
 
-// processUserData recupera os dados acumulados no MongoDB para um userNS,
+// processUserData recupera os dados acumulados no Redis para um userNS,
 // envia esses dados à URL armazenada e remove o registro do banco.
 func (u *RequestUsecase) processUserData(userNS string) {
 	u.timersMu.Lock()
 	delete(u.timers, userNS)
 	u.timersMu.Unlock()
 
-	userData, err := u.MongoRepo.FetchUserData(userNS)
+	userData, err := u.RedisRepo.FetchUserData(userNS)
 	if err != nil {
 		log.Printf("Erro ao buscar dados do usuário para userNS %s: %v", userNS, err)
 		return
@@ -166,7 +120,7 @@ func (u *RequestUsecase) processUserData(userNS string) {
 		log.Printf("Erro ao enviar dados para a URL para userNS %s: %v", userNS, err)
 	}
 
-	if err := u.MongoRepo.DeleteUserData(userNS); err != nil {
+	if err := u.RedisRepo.DeleteUserData(userNS); err != nil {
 		log.Printf("Erro ao deletar dados do usuário para userNS %s: %v", userNS, err)
 	}
 }
@@ -175,20 +129,20 @@ func (u *RequestUsecase) processUserData(userNS string) {
 func (u *RequestUsecase) sendDataToURL(url string, dataToSend []entities.BodyItem) error {
 	jsonData, err := json.Marshal(dataToSend)
 	if err != nil {
-		return fmt.Errorf("Erro ao codificar JSON: %v", err)
+		return fmt.Errorf("erro ao codificar JSON: %v", err)
 	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 
 	req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonData)))
 	if err != nil {
-		return fmt.Errorf("Erro ao criar requisição HTTP: %v", err)
+		return fmt.Errorf("erro ao criar requisição HTTP: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("Erro ao enviar requisição HTTP: %v", err)
+		return fmt.Errorf("erro ao enviar requisição HTTP: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -206,11 +160,11 @@ func (u *RequestUsecase) sendDataToURL(url string, dataToSend []entities.BodyIte
 func (u *RequestUsecase) parseTimeParam(path string) (int, error) {
 	parts := strings.Split(path, "/")
 	if len(parts) < 3 {
-		return 0, errors.New("Tempo de espera não especificado na URL")
+		return 0, errors.New("tempo de espera não especificado na URL")
 	}
 	timeParam, err := strconv.Atoi(parts[2])
 	if err != nil {
-		return 0, errors.New("Tempo de espera inválido")
+		return 0, errors.New("tempo de espera inválido")
 	}
 	return timeParam, nil
 }
@@ -222,7 +176,7 @@ func (u *RequestUsecase) parseRequestBody(r *http.Request) ([]entities.RequestDa
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil, errors.New("Erro ao ler o corpo da requisição")
+		return nil, errors.New("erro ao ler o corpo da requisição")
 	}
 
 	// 1. Tentar desserializar como []RequestData
@@ -243,27 +197,8 @@ func (u *RequestUsecase) parseRequestBody(r *http.Request) ([]entities.RequestDa
 		return []entities.RequestData{singleRequestData}, nil
 	}
 
-	return nil, errors.New("Corpo da requisição inválido ou vazio")
+	return nil, errors.New("corpo da requisição inválido ou vazio")
 }
-
-// AddResponse incrementa o contador de "requestEncaminhados" em um workspace/data.
-func (u *RequestUsecase) AddResponse(nomeWorkspace, date string, count int) error {
-	return u.MongoRepo.IncrementResponseCounter(nomeWorkspace, date, count)
-}
-
-// CountImage incrementa o contador de imagens em um workspace/data.
-func (u *RequestUsecase) CountImage(nomeWorkspace, date string, count int) error {
-	return u.MongoRepo.IncrementImageCounter(nomeWorkspace, date, count)
-}
-
-// UpdateMinutos atualiza o campo minutos em um workspace/data.
-func (u *RequestUsecase) UpdateMinutos(nomeWorkspace, date string, minutos float64) error {
-	return u.MongoRepo.UpdateMinutos(nomeWorkspace, date, minutos)
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Funções auxiliares
-////////////////////////////////////////////////////////////////////////////////
 
 // extractUserNSData extrai o userNS e URL do item "dados".
 // Retorna erro caso os campos estejam ausentes.
@@ -294,7 +229,6 @@ func reorderDataToSend(bodyItems []entities.BodyItem) []entities.BodyItem {
 		}
 	}
 	if dadosItem.Type == "" {
-		// Se não houver um item com Type="dados", apenas retorna o array original
 		return bodyItems
 	}
 	return append([]entities.BodyItem{dadosItem}, outrosItens...)
