@@ -1,0 +1,33 @@
+version: "3.7"
+
+services:
+  filaflowise:
+    image: filaflowise:1.0.0  # Removido build e container_name
+    ports:
+      - "9988:9988"
+    volumes:
+      - filaflowise_data:/root/
+    networks:
+      - RMS001
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MONGO_URI=mongodb://rms:2ce8373f618edcda7557ea61f3566d88@mongodb:27017/?authSource=admin&readPreference=primary&ssl=false&directConnection=true
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2048M
+
+volumes:
+  filaflowise_data:
+    external: true
+
+networks:
+  RMS001:
+    external: true
+    name: RMS001
