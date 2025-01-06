@@ -19,9 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /acumuladora main.go
 FROM alpine:3.17
 
 # Variáveis de ambiente para Redis (caso sejam necessárias)
-ENV REDIS_ADDR=redis:6379
-ENV REDIS_PASSWORD=
-ENV REDIS_DB=0
+ENV REDIS_URI=redis://default:osw4ld0ro@89.116.186.131:6379
 
 # Copiar o binário do build para a imagem final
 COPY --from=builder /acumuladora /usr/local/bin/acumuladora

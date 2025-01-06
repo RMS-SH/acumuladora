@@ -1,41 +1,34 @@
-////////////////////////////////////////////////////////////////////////////////
-// infrastructure/redis_client.go
-////////////////////////////////////////////////////////////////////////////////
-
 package infrastructure
 
 import (
+	"context"
 	"log"
 	"os"
-	"strconv"
 
 	"github.com/go-redis/redis/v8"
 )
 
-// NewRedisClient cria e retorna um cliente Redis a partir das variáveis de ambiente.
-func NewRedisClient() *redis.Client {
-	addr := os.Getenv("REDIS_ADDR")
-	if addr == "" {
-		addr = "localhost:6379" // Valor padrão, se não setado
+// NewRedisClient inicializa e retorna um novo cliente Redis.
+// Ele se conecta usando a variável de ambiente REDIS_URI no formato:
+// redis://<username>:<password>@<host>:<port>/<db>
+func NewRedisClient(ctx context.Context) *redis.Client {
+	redisURI := os.Getenv("REDIS_URI")
+	if redisURI == "" {
+		log.Fatal("A variável de ambiente REDIS_URI não está definida")
 	}
 
-	password := os.Getenv("REDIS_PASSWORD") // Pode ser vazio
-	dbStr := os.Getenv("REDIS_DB")
-	if dbStr == "" {
-		dbStr = "0"
-	}
-	db, err := strconv.Atoi(dbStr)
+	opts, err := redis.ParseURL(redisURI)
 	if err != nil {
-		log.Printf("Valor inválido para REDIS_DB, usando DB=0: %v", err)
-		db = 0
+		log.Fatalf("Erro ao analisar a URL do Redis: %v", err)
 	}
 
-	client := redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Password: password,
-		DB:       db,
-	})
+	client := redis.NewClient(opts)
 
-	log.Printf("Conectado ao Redis em %s, DB=%d", addr, db)
+	// Testar a conexão com um PING
+	if err := client.Ping(ctx).Err(); err != nil {
+		log.Fatalf("Falha ao conectar no Redis: %v", err)
+	}
+
+	log.Println("Conexão estabelecida com sucesso ao Redis")
 	return client
 }

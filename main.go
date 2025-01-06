@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/joho/godotenv"
@@ -27,7 +28,7 @@ func main() {
 	}
 
 	// Inicializar cliente Redis
-	redisClient := infrastructure.NewRedisClient()
+	redisClient := infrastructure.NewRedisClient(context.TODO())
 
 	// Configurar repositório
 	redisRepo := repositories.NewRedisRepository(redisClient)

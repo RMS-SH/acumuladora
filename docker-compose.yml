@@ -1,12 +1,10 @@
-# docker-compose.yml
-
 version: "3.7"
 
 services:
+
   acumuladora:
     image: acumuladora:1.0.0
-    ports:
-      - "7511:7511"
+    # Removido a seção ports
     networks:
       - RMS001
     environment:

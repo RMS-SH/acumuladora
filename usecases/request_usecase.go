@@ -61,21 +61,20 @@ func (u *RequestUsecase) ProcessRequest(r *http.Request) (int, error) {
 			return http.StatusBadRequest, err
 		}
 
-		// 3.1 Se timeParam == 0, envia os dados imediatamente; caso contrário, acumula.
+		// Se timeParam == 0, envia de imediato; caso contrário, acumula no Redis.
 		if timeParam == 0 {
-			// Envio imediato dos dados
 			dataToSend := reorderDataToSend(requestData.Body)
+			// ========================= LOG DE SAÍDA (IMEDIATO) =========================
+			log.Printf("[ENCAMINHAMENTO-IMEDIATO] Enviando request para %s", url)
 			if err := u.sendDataToURL(url, dataToSend); err != nil {
 				log.Printf("Erro ao enviar dados para a URL: %v", err)
 				return http.StatusInternalServerError, err
 			}
 		} else {
-			// Salvar dados no Redis para envio posterior
 			if err := u.RedisRepo.SaveUserData(userNS, requestData.Body, url); err != nil {
 				log.Printf("Erro ao salvar dados do usuário no Redis: %v", err)
 				return http.StatusInternalServerError, err
 			}
-			// Agendar processamento dos dados após o tempo de acúmulo
 			u.scheduleDataProcessing(userNS, timeParam+1)
 		}
 	}
@@ -116,6 +115,8 @@ func (u *RequestUsecase) processUserData(userNS string) {
 	}
 
 	dataToSend := reorderDataToSend(userData.Body)
+	// ========================= LOG DE SAÍDA (ACUMULADO) =========================
+	log.Printf("[ENCAMINHAMENTO-AGENDADO] Enviando request para %s", userData.URL)
 	if err := u.sendDataToURL(userData.URL, dataToSend); err != nil {
 		log.Printf("Erro ao enviar dados para a URL para userNS %s: %v", userNS, err)
 	}
@@ -126,6 +127,7 @@ func (u *RequestUsecase) processUserData(userNS string) {
 }
 
 // sendDataToURL faz a serialização para JSON e o envio HTTP (POST) dos dados.
+// 2.1 - Status code e JSON encaminhado
 func (u *RequestUsecase) sendDataToURL(url string, dataToSend []entities.BodyItem) error {
 	jsonData, err := json.Marshal(dataToSend)
 	if err != nil {
@@ -146,12 +148,13 @@ func (u *RequestUsecase) sendDataToURL(url string, dataToSend []entities.BodyIte
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("código de status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
+	bodyResp, _ := io.ReadAll(resp.Body)
 
-	log.Printf("Dados enviados com sucesso para a URL: %s", url)
+	// Aqui logamos o status code e o JSON enviado
+	log.Printf("[ENCAMINHAMENTO] StatusCode: %d, JSON Enviado: %s", resp.StatusCode, string(jsonData))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("código de status %d: %s", resp.StatusCode, string(bodyResp))
+	}
 	return nil
 }
 
